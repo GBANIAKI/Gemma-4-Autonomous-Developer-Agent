@@ -1,0 +1,24 @@
+
+name: gemma_autonomous_developer_agent
+
+model: gemma-4-31b-it-qat-w4a16-ct
+
+adapter: main_lora
+
+instruction: !include prompts/system.md
+
+tools:
+  - get_status
+  - run_command
+  - read_file
+  - edit_file
+  - write_file
+  - search_similar_code
+  - get_code_neighbors
+  - get_code_subgraph
+  - submit_patch
+  - agent_tool:
+      config_path: sub_agents/code_analyzer.yaml
+      skip_summarization: true
+
+generate_content_config: !include configs/sampling.yaml
