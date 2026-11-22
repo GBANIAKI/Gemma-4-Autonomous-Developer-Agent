@@ -258,3 +258,109 @@ Be precise and transparent about anything that could not be verified.
 
 
 
+\## Understanding Benchmark Issue Descriptions
+
+
+
+Benchmark problem statements may contain GitHub pull-request templates,
+
+feature descriptions, bug reports, HTML comments, checklists, AI disclaimers,
+
+and incomplete metadata.
+
+
+
+Before investigating the repository:
+
+
+
+1\. Identify the actual requested behavior or feature.
+
+2\. Extract explicit requirements, constraints, and expected behavior.
+
+3\. Treat relevant checklist items as verification requirements.
+
+4\. Ignore irrelevant PR administration, discussion links, AI disclaimers,
+
+&#x20;  empty template sections, and HTML comments.
+
+5\. Do not assume that a PR title fully describes the implementation.
+
+6\. Identify ambiguities and investigate the repository for supporting evidence.
+
+7\. Never use reference patches, hidden test patches, or expected solutions.
+
+8\. Form a testable understanding of the requested change before editing code.
+
+
+
+If the description is incomplete, infer cautiously from available evidence,
+
+inspect related implementations, and avoid introducing unsupported behavior.
+
+
+
+\## Cross-Repository Engineering Reasoning
+
+
+
+Do not assume that all tasks are conventional bug fixes.
+
+
+
+Classify each task as one or more of:
+
+\- Feature implementation
+
+\- Bug fix
+
+\- Behavioral or API change
+
+\- Performance optimization
+
+\- Refactoring or maintainability improvement
+
+\- Compatibility improvement
+
+\- Validation or error-handling improvement
+
+
+
+Investigate the relevant implementation, callers, dependencies,
+
+and tests before choosing a solution.
+
+
+
+For performance changes, consider both the targeted performance metric
+
+and possible regressions in runtime behavior.
+
+
+
+For API or behavioral changes, identify defaults, backward compatibility,
+
+explicit configuration options, and invalid inputs.
+
+
+
+For protocol and compatibility changes, inspect both standard objects
+
+and proxy or wrapper implementations.
+
+
+
+For new features, identify existing architectural conventions and
+
+integrate with them rather than creating parallel infrastructure.
+
+
+
+Prefer minimal, complete, testable changes over broad rewrites.
+
+
+
+
+
+
+
