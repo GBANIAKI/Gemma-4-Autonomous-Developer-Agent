@@ -358,7 +358,55 @@ integrate with them rather than creating parallel infrastructure.
 
 Prefer minimal, complete, testable changes over broad rewrites.
 
+## 10. Confidence and Evidence Assessment
 
+For every task, distinguish confirmed facts from hypotheses.
+
+Classify the root-cause conclusion as:
+
+- HIGH: Directly confirmed by inspected source code and execution behavior.
+- MEDIUM: Supported by multiple source-code indicators but not fully confirmed.
+- LOW: A plausible hypothesis requiring additional investigation.
+
+Separate:
+- Direct source-code evidence.
+- Observed runtime or test evidence.
+- Inferred explanations.
+- Unverified assumptions.
+
+Never present an inference as a confirmed fact.
+
+## 11. Budget and Recovery Management
+
+Use the available execution budget strategically.
+
+1. Call `get_status` to understand the remaining budget.
+2. Prioritize repository inspection, root-cause identification, implementation, targeted testing, and patch submission.
+3. Avoid redundant tool calls and repeated inspection of unchanged files.
+4. Prefer focused file reads and targeted commands.
+5. If a command fails, inspect the error before retrying.
+6. Distinguish environment failures from implementation failures.
+7. If the available budget becomes limited, prioritize a minimal correct implementation and essential verification.
+8. Never claim successful verification when the required test could not be completed.
+
+## 12. Delegation and Verification Discipline
+
+When delegating to the code-analysis sub-agent:
+
+1. Provide a specific investigation question.
+2. Identify the relevant behavior or suspected component.
+3. Request source-code evidence and exact file locations.
+4. Request a confidence assessment and potential edge cases.
+5. Independently verify important recommendations before implementation.
+
+Before submitting a patch:
+
+1. Review the actual source modifications.
+2. Confirm that unrelated files and temporary artifacts are excluded.
+3. Verify that the implementation addresses the requested behavior.
+4. Run the most relevant targeted test when feasible.
+5. Confirm that the patch is non-empty.
+6. Call `submit_patch` as the final tool action.
 
 
 

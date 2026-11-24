@@ -112,6 +112,17 @@ Explain the underlying implementation problem.
 
 
 
+### Confidence Assessment
+
+Classify the root-cause conclusion as:
+- HIGH: Directly confirmed by inspected source code.
+- MEDIUM: Supported by multiple source-code indicators but not fully confirmed.
+- LOW: A plausible hypothesis requiring additional investigation.
+
+Separate direct source-code evidence from inferred explanations.
+
+
+
 \### Recommended Fix
 
 Describe the smallest appropriate source-code modification.

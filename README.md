@@ -1,16 +1,26 @@
 # Gemma 4 Autonomous Developer Agent
-## Business Analysis and System Requirements
 
-> **Project concept:** An offline-capable autonomous AI software engineering agent powered by a post-trained Gemma 4 model.
+> A declarative Gemma 4 software engineering agent submission designed for repository investigation, evidence-based code analysis, targeted implementation, and independently verified patch generation.
 >
-> **Primary capability:** Resolve software engineering issues through repository investigation, targeted code changes, patch generation, and independent test verification.
->
-> **Primary deliverable:** A unified Git patch that applies to the original repository snapshot and passes the required independent tests.
-
----
+> **Current implementation:** A configured main agent, a read-only analysis sub-agent, two PEFT LoRA adapter artifacts, prompts, and harness-facing YAML configuration. The `src/` directories are scaffolding rather than a completed standalone application.
 
 ## Table of Contents
 
+### Project and Developer Guide
+- [Project Overview](#project-overview)
+- [Competition Objective and Deliverable](#competition-objective-and-deliverable)
+- [Implementation Status](#implementation-status)
+- [Architecture and Agent Workflow](#architecture-and-agent-workflow)
+- [Repository Structure](#repository-structure)
+- [Model and Adapter Configuration](#model-and-adapter-configuration)
+- [Runtime and Resource Configuration](#runtime-and-resource-configuration)
+- [Setup, Packaging, and Evaluation](#setup-packaging-and-evaluation)
+  - [Prepare the Environment](#prepare-the-environment)
+  - [Package the Submission](#package-the-submission)
+  - [Run Local Evaluation](#run-local-evaluation)
+- [Known Limitations and Practical Notes](#known-limitations-and-practical-notes)
+
+### Business Analysis and System Requirements
 - [1. Executive Summary](#1-executive-summary)
 - [2. Business Objectives](#2-business-objectives)
 - [3. Stakeholders and Actors](#3-stakeholders-and-actors)
@@ -28,6 +38,336 @@
 - [15. Recommended Development Priorities](#15-recommended-development-priorities)
 - [16. Product Definition](#16-product-definition)
 - [17. Strategic Innovation and Research Direction](#17-strategic-innovation-and-research-direction)
+- [Conclusion](#conclusion)
+
+---
+
+## Project Overview
+
+Gemma 4 Autonomous Developer Agent is a declarative, tool-using software engineering agent submission for the Gemma 4 Developer Agent competition. It is designed to investigate repository issues, reason about likely root causes, make focused implementation changes, and submit a unified Git patch for independent verification.
+
+The documented repository snapshot contains the agent configuration, prompts, two PEFT LoRA adapter artifacts, and a read-only code-analysis sub-agent. The Python directories under `src/` are package scaffolding at this point; they should not be mistaken for a complete, independently runnable application.
+
+## Competition Objective and Deliverable
+
+The competition evaluates an agent's ability to resolve software engineering tasks in repository snapshots. A successful task requires more than generating plausible code: the submitted patch must apply to the correct base repository and pass the benchmark's independent verification tests.
+
+The primary deliverable is a **unified Git patch**. The evaluation harness applies that patch in a fresh verification environment and runs the required tests. A successful result depends on the harness's verification criteria, not solely on the main agent's own report.
+
+## Implementation Status
+
+The following records the repository structure and configuration documented in this README. It does not imply that every proposed capability in the requirements document has been implemented.
+
+| Area | Observed repository state |
+|---|---|
+| Root agent | Configured in `submission/agent.yaml` |
+| Foundation model | `gemma-4-31b-it-qat-w4a16-ct` |
+| Main agent adapter | `submission/adapters/main_lora/` |
+| Analysis sub-agent | Configured in `submission/sub_agents/code_analyzer.yaml` |
+| Analysis adapter | `submission/adapters/tool_lora/` |
+| Agent instructions | `submission/prompts/system.md` and `submission/prompts/analyzer.md` |
+| Generation settings | `submission/configs/sampling.yaml` |
+| Per-task evaluation settings | `submission/eval_config.yaml` |
+| Python packages | `src/` contains package initializers; application modules are not yet present |
+| Competition data | `competition_data/` exists but is empty in the inspected checkout |
+| Root dependency manifest | No root `requirements.txt`, `pyproject.toml`, or `setup.py` was present in the inspected checkout |
+
+The competition harness supplies the agent runtime and repository tools. This repository's YAML configuration declares how the agent uses those capabilities; it does not implement the harness tools in `src/`.
+
+## Architecture and Agent Workflow
+
+The submission uses a main agent and a specialized read-only analysis sub-agent. Both are configured to use the same Gemma 4 base model, while their agent configurations point to separate LoRA adapter directories.
+
+### Main agent
+
+`submission/agent.yaml` configures:
+
+- **Name:** `gemma_autonomous_developer_agent`
+- **Model:** `gemma-4-31b-it-qat-w4a16-ct`
+- **Adapter:** `main_lora`
+- **System instructions:** `prompts/system.md`
+- **Generation settings:** `configs/sampling.yaml`
+
+The main agent is configured with these harness-provided tools:
+
+1. `get_status`
+2. `run_command`
+3. `read_file`
+4. `edit_file`
+5. `write_file`
+6. `search_similar_code`
+7. `get_code_neighbors`
+8. `get_code_subgraph`
+9. `submit_patch`
+
+It also has an `agent_tool` entry that delegates repository investigation to `sub_agents/code_analyzer.yaml`. The delegation is configured with `skip_summarization: true`.
+
+### Read-only code analyzer
+
+`submission/sub_agents/code_analyzer.yaml` configures:
+
+- **Name:** `code_analyzer_agent`
+- **Model:** `gemma-4-31b-it-qat-w4a16-ct`
+- **Adapter:** `tool_lora`
+- **Instructions:** `../prompts/analyzer.md`
+- **Generation settings:** `../configs/sampling.yaml`
+
+The analyzer has four read-only tools: `read_file`, `search_similar_code`, `get_code_neighbors`, and `get_code_subgraph`. Its prompt explicitly prohibits file edits, shell commands, and patch submission. It returns a structured analysis for the main agent, which remains responsible for implementation, testing, and patch submission.
+
+### Operational workflow
+
+1. The main agent checks task and patch status.
+2. It interprets the issue and identifies investigation goals.
+3. It uses repository reading, semantic retrieval, and code-relationship tools to investigate.
+4. When useful, it delegates focused read-only analysis to the analyzer sub-agent.
+5. The main agent evaluates the evidence and makes targeted source changes.
+6. It runs appropriate commands or tests within the available budget.
+7. It checks the resulting patch and submits it through `submit_patch`.
+8. The evaluation harness applies the patch in a fresh environment and independently verifies it.
+
+The analyzer's role is deliberately limited to investigation. It does not have the main agent's editing or patch-submission tools.
+
+## Repository Structure
+
+The following is the core tracked project structure inspected for this README:
+
+```text
+gemma-4-developer-agent/
+├── README.md
+├── src/
+│   ├── __init__.py
+│   ├── dataset/
+│   │   └── __init__.py
+│   ├── embeddings/
+│   │   └── __init__.py
+│   ├── graph_intelligence/
+│   │   └── __init__.py
+│   ├── repository/
+│   │   └── __init__.py
+│   └── utils/
+│       └── __init__.py
+└── submission/
+    ├── agent.yaml
+    ├── eval_config.yaml
+    ├── adapters/
+    │   ├── main_lora/
+    │   │   ├── adapter_config.json
+    │   │   └── adapter_model.safetensors
+    │   └── tool_lora/
+    │       ├── adapter_config.json
+    │       └── adapter_model.safetensors
+    ├── configs/
+    │   └── sampling.yaml
+    ├── prompts/
+    │   ├── analyzer.md
+    │   └── system.md
+    └── sub_agents/
+        └── code_analyzer.yaml
+```
+
+The documented repository snapshot contains an empty `competition_data/` directory. Benchmark tasks, repository snapshots, and other competition assets must be obtained through the [official competition data distribution](https://www.kaggle.com/competitions/gemma-4-developer-agent/data) and its setup process.
+
+The local `wheelhouse/` cache and `_snapshot_git_check/` directory are development artifacts, not part of the tracked submission structure in the repository snapshot documented here. Do not add them to the submission archive unless the competition's packaging instructions explicitly require a particular dependency bundle.
+
+## Model and Adapter Configuration
+
+### Foundation model
+
+The root agent and analyzer both specify:
+
+```yaml
+model: gemma-4-31b-it-qat-w4a16-ct
+```
+
+Their adapter configurations identify the corresponding base model as:
+
+```text
+google/gemma-4-31b-it-qat-w4a16-ct
+```
+
+The checked-in root agent and analyzer use `gemma-4-31b-it-qat-w4a16-ct`. Published competition references are not fully aligned on the complete model allowlist: the Kaggle competition overview names the 31B variant, while the participant harness guide distributed with the competition data lists four quantized variants: `gemma-4-31b-it-qat-w4a16-ct`, `gemma-4-12b-it-qat-w4a16-ct`, `gemma-4-e4b-it-qat-w4a16-ct`, and `gemma-4-e2b-it-qat-w4a16-ct`. Keep the checked-in 31B configuration unless the active scoring harness explicitly confirms another variant is accepted. See the [competition overview](https://www.kaggle.com/competitions/gemma-4-developer-agent) and [competition data and harness files](https://www.kaggle.com/competitions/gemma-4-developer-agent/data).
+
+### LoRA adapter settings
+
+Both `main_lora/adapter_config.json` and `tool_lora/adapter_config.json` contain the following configuration values:
+
+| Setting | Value |
+|---|---|
+| `peft_type` | `LORA` |
+| `task_type` | `CAUSAL_LM` |
+| `r` | `4` |
+| `lora_alpha` | `8` |
+| `lora_dropout` | `0.0` |
+| `target_modules` | `q_proj`, `o_proj` |
+| `layers_to_transform` | `[0]` |
+| `bias` | `none` |
+| `inference_mode` | `true` |
+
+The two adapter configuration files have the same metadata. They are assigned to different agent roles in YAML, but the metadata alone does not establish that their learned weights or training histories are different. The adapter weight files are separate artifacts.
+
+### Generation settings
+
+`submission/configs/sampling.yaml` specifies:
+
+```yaml
+temperature: 0.2
+top_p: 0.95
+max_output_tokens: 16384
+
+thinking_config:
+  thinking_budget: 4096
+  include_thoughts: true
+```
+
+These are the settings recorded in the repository. Confirm compatibility with the active model-serving and harness requirements before changing them.
+
+## Runtime and Resource Configuration
+
+### Per-task evaluation limits
+
+`submission/eval_config.yaml` currently specifies:
+
+```yaml
+evaluation:
+  timeout_seconds: 60
+  max_tool_calls: 10
+  max_time_minutes: 1
+  max_turns: 50
+```
+
+These are submission-level overrides in this repository, not the harness defaults. The participant harness guide documents a 60-minute default agent session, a 300-second default command timeout, and (for the inference path) defaults of 100 tool calls and 500 reasoning turns. This repository overrides those values with a one-minute agent session, a 60-second command timeout, ten tool calls, and 50 turns. The Phase 2 verification timeout is 300 seconds in the harness documentation and is not set by this `eval_config.yaml`. These restrictive overrides may limit multi-step investigation, implementation, and testing; change them only after checking the active competition limits and evaluating their effect on task performance.
+
+### Competition execution environment
+
+The competition harness documentation describes an isolated Linux evaluation environment. Its documented resource and packaging constraints include:
+
+- Four NVIDIA L4 GPUs, with 96 GB aggregate GPU memory on the evaluation infrastructure.
+- Sandbox containers configured with 4 GiB RAM and 2 vCPUs each.
+- An unpacked submission archive smaller than 3 GiB.
+- Offline task execution; runtime behavior must not depend on internet access.
+- Separate agent and independent-verification environments.
+
+These are competition infrastructure constraints, not requirements for the Windows computer used to edit this repository. The 4 × NVIDIA L4 / 96 GB GPU configuration, 4 GiB / 2-vCPU sandbox limits, 32,768-token context ceiling, and archive-size constraint are described in the participant harness documentation distributed with the [official competition data](https://www.kaggle.com/competitions/gemma-4-developer-agent/data).
+
+### Windows development versus Linux evaluation
+
+The development environment documented for this repository uses Windows and Python 3.14.10. The local wheelhouse contains Linux x86-64 native wheels tagged for CPython 3.12 (`cp312`). Those wheels are not directly installable in a Windows CPython 3.14 environment.
+
+The competition dataset documentation describes a sandbox base image using Python 3.13. The local Windows Python 3.14.10 environment and the separate Linux CPython 3.12 wheelhouse cache are different environments; those local wheels are not directly installable in Windows CPython 3.14. Use the Python version, Linux image, dependency bundle, and container setup prescribed by the active competition harness for evaluation.
+
+## Setup, Packaging, and Evaluation
+
+This repository is a declarative competition submission and configuration project, not a standalone Python application with a root package installer. The competition harness provides the agent runtime, tools, sandbox, and evaluation pipeline.
+
+### Prepare the Environment
+
+1. Clone the repository:
+
+   ```bash
+   git clone https://github.com/GBANIAKI/Gemma-4-Autonomous-Developer-Agent.git
+   cd Gemma-4-Autonomous-Developer-Agent
+   ```
+
+2. Obtain the competition's task data, repository snapshots, and evaluation assets using the official competition instructions. The local `competition_data/` directory is empty in the inspected project state.
+
+3. Prepare the official evaluation environment. Follow the competition harness documentation for its supported Linux runtime, Docker setup, dependency wheelhouse, model availability, and Kaggle authentication requirements.
+
+4. Review the submission configuration:
+   - `submission/agent.yaml`
+   - `submission/eval_config.yaml`
+   - `submission/configs/sampling.yaml`
+   - `submission/sub_agents/code_analyzer.yaml`
+   - `submission/prompts/system.md`
+   - `submission/prompts/analyzer.md`
+
+5. Confirm that all files referenced by YAML `!include` directives are present inside the submission directory and that both adapter directories contain their PEFT configuration and `.safetensors` weights.
+
+There is no root-level `requirements.txt`, `pyproject.toml`, or `setup.py` in the inspected repository state. Do not use `pip install -e .` as an installation step for this repository unless a package manifest is added later. Install and run the competition harness according to its own instructions.
+
+### Package the Submission
+
+The competition submission archive must place `agent.yaml` at the archive root. It must not contain an extra top-level `submission/` directory.
+
+From the repository root, on Windows PowerShell:
+
+```powershell
+Compress-Archive -Path submission\* -DestinationPath submission.zip -Force
+```
+
+On a Linux environment with `zip` installed:
+
+```bash
+cd submission
+zip -r ../submission.zip .
+cd ..
+```
+
+After packaging, verify that `agent.yaml` is at the archive root. For example, using Python:
+
+```bash
+python -c "import zipfile; z=zipfile.ZipFile('submission.zip'); print('agent.yaml at archive root:', 'agent.yaml' in z.namelist())"
+```
+
+The expected result is:
+
+```text
+agent.yaml at archive root: True
+```
+
+The archive should include the YAML configuration, prompts, referenced configuration files, sub-agent configuration, and required adapter directories. Keep the archive within the competition's size limit. Do not include unrelated repository snapshots, local backups, temporary logs, or caches.
+
+The `submission.zip` agent configuration archive should not be confused with `submission.parquet`, which is a prediction artifact produced by the competition evaluation/submission pipeline when required.
+
+### Run Local Evaluation
+
+Local evaluation requires the official competition harness, benchmark task file, repository snapshots, and the supported sandbox environment. Those assets are not supplied by the currently inspected `competition_data/` directory.
+
+The harness documentation describes the `swegemma eval` interface. A typical invocation is:
+
+```bash
+swegemma eval \
+  --tasks <tasks.jsonl> \
+  --snapshots-dir <snapshots-directory> \
+  --submission-dir submission \
+  --results-dir <results-directory> \
+  --sandbox docker
+```
+
+Replace the placeholders with paths from your downloaded competition data. Use the options and limits supported by the installed harness version. The `submission-dir` must point to the directory containing `agent.yaml`.
+
+The harness can produce artifacts such as:
+
+- `summary.json`
+- `task_results.jsonl`
+- `patches/`
+- `test_outputs/`
+- `traces/`
+- `logs/`
+
+A task should be considered resolved only according to the harness's independent verification criteria. In the documented evaluation flow, this includes successful patch application, a valid JUnit report, at least one passing test, no failures or errors, and explicit passing results for all required tests. A skipped required test is not a successful verification.
+
+For exact command-line options, task-data preparation, and applicable scoring rules, consult the official harness documentation distributed with the competition.
+
+## Known Limitations and Practical Notes
+
+- **Python source status:** The `src/` directories contain package initializers only. The configured repository-analysis tools are supplied by the competition harness; they are not implemented by those placeholder packages.
+- **Data availability:** `competition_data/` was empty when this README was prepared. The benchmark datasets and repository snapshots must be obtained separately.
+- **Dependency manifest:** No root Python dependency manifest was present in the inspected checkout. The harness has its own dependency and runtime installation process.
+- **Wheelhouse compatibility:** The inspected local wheelhouse includes Linux x86-64 CPython 3.12 wheels. It is not a Windows/Python 3.14 wheelhouse.
+- **Evaluation budget:** The configured one-minute and ten-tool-call per-task limits may constrain investigation, implementation, and verification of nontrivial issues.
+- **Adapter interpretation:** The two adapter configurations have identical visible metadata. Their role assignment is distinct, but their actual training differences cannot be inferred from the JSON configuration files alone.
+- **Offline operation:** Download datasets, dependencies, and model assets before entering the isolated evaluation phase. Do not make the agent depend on network access while it is solving benchmark tasks.
+- **Competition rules:** Consult the official competition rules and harness README before packaging or submitting, because competition interfaces and constraints may be revised.
+
+---
+
+## Business Analysis and System Requirements
+
+> **Project concept:** An offline-capable autonomous AI software engineering agent powered by a post-trained Gemma 4 model.
+>
+> **Primary capability:** Resolve software engineering issues through repository investigation, targeted code changes, patch generation, and independent test verification.
+>
+> **Primary deliverable:** A unified Git patch that applies to the original repository snapshot and passes the required independent tests.
 
 ---
 
@@ -198,6 +538,8 @@ Shared intelligence infrastructure:
 | Patch Generator | Make controlled source-code modifications and create patches |
 | Verification Coordinator | Run tests, inspect failures, and submit patches |
 | Shared intelligence infrastructure | Provide model inference, adapters, code graphs, embeddings, and reusable skills |
+
+> **Architecture status:** This table describes the broader proposed system architecture. The configured submission documented in this README has a root agent and one read-only code-analysis sub-agent. The competition harness supplies the repository tools and evaluation infrastructure; the six conceptual components are not six separately implemented agents in this repository.
 
 ### 5.3 Independent verification
 
@@ -430,7 +772,7 @@ Functional requirements specify what the system must do. The requirements are gr
 | ID | Functional requirement |
 |---|---|
 | FR-061 | The system shall use one approved Gemma 4 base model per submission. |
-| FR-062 | The system shall support the four permitted quantized model variants. |
+| FR-062 | The system shall use a quantized Gemma 4 base model explicitly accepted by the active competition scoring harness. |
 | FR-063 | The system shall support optional PEFT LoRA adapters. |
 | FR-064 | The system shall allow different adapters to be assigned to different agents using the same base model. |
 | FR-065 | The system shall load generation configurations from approved configuration files. |
@@ -470,7 +812,7 @@ The following tables distinguish competition constraints from broader engineerin
 
 | ID | Requirement | Target / constraint |
 |---|---|---|
-| NFR-001 | Task processing time | Complete all benchmark tasks within the competition's 12-hour submission execution limit. |
+| NFR-001 | Task processing time | Complete all benchmark tasks within the competition's 12-hour overall execution budget, which includes sandbox setup but excludes patch validation. |
 | NFR-002 | Agent execution time | Respect configured per-task time limits. |
 | NFR-003 | Command execution | Maximum default command timeout of 300 seconds. |
 | NFR-004 | Verification execution | Maximum verification timeout of 300 seconds. |
@@ -479,7 +821,7 @@ The following tables distinguish competition constraints from broader engineerin
 | NFR-007 | Context capacity | Respect the 32,768-token model context limit. |
 | NFR-008 | Parallel processing | Support parallel agent execution and configurable benchmark concurrency. |
 
-> **Time-budget distinction:** The 12-hour overall competition budget should not be confused with the per-task agent time budget. The harness README documents a default 60-minute agent session, which can be customized through evaluation configuration.
+> **Time-budget distinction:** The [competition overview](https://www.kaggle.com/competitions/gemma-4-developer-agent) specifies a 12-hour overall execution budget that includes sandbox setup but excludes patch validation. This is separate from the per-task agent-session budget. The participant harness guide distributed through the [competition data page](https://www.kaggle.com/competitions/gemma-4-developer-agent/data) documents a 60-minute default; this repository overrides it with a one-minute session, ten tool calls, 50 turns, and a 60-second command timeout. The 300-second Phase 2 verification timeout is separate from the agent-session budget.
 
 ### 8.2 Reliability Requirements
 
@@ -487,7 +829,7 @@ The following tables distinguish competition constraints from broader engineerin
 |---|---|---|
 | NFR-009 | Patch correctness | Generated patches must resolve the underlying issue rather than merely change related code. |
 | NFR-010 | Patch applicability | Generated patches must apply successfully to the original repository snapshot. |
-| NFR-011 | Test reliability | Required verification tests must pass without failures, errors, or skips. |
+| NFR-011 | Test reliability | The independent JUnit report must show at least one passing test, with all required tests passing and no required test failures, errors, or skips. |
 | NFR-012 | Error recovery | The agent must handle recoverable tool errors without unnecessary termination. |
 | NFR-013 | Session continuity | The system must preserve relevant task state during multi-turn reasoning. |
 | NFR-014 | Reproducibility | The same task and base repository snapshot should support reproducible evaluation. |
@@ -522,7 +864,7 @@ A task is resolved only when its patch applies and the independent verification 
 |---|---|---|
 | NFR-024 | GPU availability | Evaluation infrastructure provides four NVIDIA L4 GPUs. |
 | NFR-025 | GPU memory | 96 GB aggregate GPU memory. |
-| NFR-026 | Model compatibility | Only the four specified quantized Gemma 4 variants are permitted. |
+| NFR-026 | Model compatibility | The declared quantized Gemma 4 base model must be accepted by the active competition scoring harness; the checked-in configuration uses the 31B IT QAT W4A16 CT variant. |
 | NFR-027 | Container memory | 4 GiB RAM per sandbox container. |
 | NFR-028 | Container CPU | Two vCPUs per sandbox container. |
 | NFR-029 | Submission archive | Total unpacked archive must be less than 3 GiB. |
@@ -561,7 +903,7 @@ Business rules define constraints that the system must always respect.
 | ID | Business rule |
 |---|---|
 | BR-001 | Every agent in a submission must use the same approved base model. |
-| BR-002 | Only the four specified quantized Gemma 4 models are permitted. |
+| BR-002 | Every agent must use the same quantized Gemma 4 base model, and that model must be explicitly accepted by the active competition scoring harness. |
 | BR-003 | The submission must contain `agent.yaml` at the root of `submission.zip`. |
 | BR-004 | All configuration references must resolve within the submission directory. |
 | BR-005 | Arbitrary Python agent entrypoints are not permitted. |
@@ -571,14 +913,14 @@ Business rules define constraints that the system must always respect.
 | BR-009 | The agent must modify implementation code rather than protected tests to resolve an issue. |
 | BR-010 | The generated patch must correspond to the original repository base commit. |
 | BR-011 | The evaluation system must independently validate submitted patches. |
-| BR-012 | A task receives a passing result only when the required tests pass and the JUnit report is valid. |
+| BR-012 | A task receives a passing result only when the patch applies, the JUnit report is valid, at least one test passes, and all required tests pass without failures, errors, or skips. |
 | BR-013 | The final submission must follow the required prediction output format. |
 
 ---
 
 ## 10. Dataset and Data Requirements
 
-The competition provides a foundation for training, fine-tuning, and validating the agent.
+The competition provides a public development dataset for agent development, prompt engineering, and offline validation. The hidden evaluation set is curated separately.
 
 ### 10.1 Dataset inventory
 
@@ -586,12 +928,14 @@ The competition provides a foundation for training, fine-tuning, and validating 
 |---|---:|---|
 | Public development tasks | 129 | Agent development and validation |
 | Repository snapshots | 129 | Reproducible repository environments |
-| Graph files | 256 | Code structure and dependency exploration |
-| Embedding archives | 256 | Semantic code retrieval |
+| Graph files | 256 | Code structure and dependency exploration; includes task-named and commit-named files |
+| Embedding archives | 256 | Semantic code retrieval; includes task-named and commit-named files |
 | Precompiled dependency wheels | 124 | Offline package installation |
 | Hidden evaluation tasks | Approximately 120 | Final performance evaluation |
 
 ### 10.2 Supported repositories
+
+The public benchmark contains 129 tasks across four repositories. The 256 graph files and 256 embedding archives comprise 129 task-named files plus 127 commit-named files. The published dataset description reports approximately 120 hidden evaluation tasks. Dataset inventory and repository details are documented on the [official competition data page](https://www.kaggle.com/competitions/gemma-4-developer-agent/data).
 
 The public benchmark includes four repositories:
 
@@ -714,7 +1058,7 @@ This matrix connects business objectives to user stories, functional requirement
 
 ## 15. Recommended Development Priorities
 
-Given the competition's limited remaining time, implementation should be prioritized according to its direct contribution to the final resolution rate.
+Implementation should be prioritized according to its expected contribution to the final resolution rate and the evidence from benchmark experiments.
 
 ### Priority 1 — Core agent
 
@@ -762,7 +1106,7 @@ Given the competition's limited remaining time, implementation should be priorit
 - Hardware optimization.
 - Cross-repository generalization.
 
-> **Implementation recommendation:** Do not spend most of the remaining development time implementing a sophisticated multi-agent architecture before establishing that a single agent can consistently solve benchmark tasks. Build a reliable baseline, measure it, and introduce specialized agents where experiments demonstrate an improvement.
+> **Implementation recommendation:** Establish and measure a reliable single-agent baseline before investing heavily in a sophisticated multi-agent architecture. Introduce specialized agents when experiments demonstrate that they improve task resolution or operational efficiency.
 
 ---
 
