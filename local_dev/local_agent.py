@@ -28,7 +28,15 @@ def delegate_to_analyzer(task):
 MODEL = "gemma-4-31b-it"
 MAX_TOOL_CALLS = 6
 
-client = genai.Client()
+_client = None
+
+
+def get_client():
+    """Initialize the Google Gen AI client only when needed."""
+    global _client
+    if _client is None:
+        _client = genai.Client()
+    return _client
 
 # Only these four read-only functions are available to the model.
 FUNCTIONS = {
@@ -277,9 +285,9 @@ def generate_with_retry(**kwargs):
     """Retry temporary Google API availability and rate-limit errors."""
     delays = [5, 15, 30]
 
-    for attempt, delay in enumerate(delays, start=1):
+    for attempt in range(len(delays) + 1):
         try:
-            return client.models.generate_content(**kwargs)
+            return get_client().models.generate_content(**kwargs)
 
         except (errors.ServerError, errors.ClientError) as exc:
             status_code = getattr(exc, "code", None)
@@ -290,8 +298,9 @@ def generate_with_retry(**kwargs):
             if attempt == len(delays):
                 raise
 
+            delay = delays[attempt]
             print(
-                f"[API RETRY] Attempt {attempt} failed "
+                f"[API RETRY] Attempt {attempt + 1}/3 failed "
                 f"(HTTP {status_code}). Waiting {delay} seconds."
             )
             time.sleep(delay)
@@ -362,11 +371,81 @@ def run_agent(task):
     evidence_ledger = []
 
     while tool_call_count < MAX_TOOL_CALLS:
-        response = generate_with_retry(
-                  model=MODEL,
-                  contents=contents,
-                 config=config,
-               )
+        try:
+            response = generate_with_retry(
+                model=MODEL,
+                contents=contents,
+                config=config,
+            )
+        except (errors.ServerError, errors.ClientError) as exc:
+            status_code = getattr(exc, "code", None)
+
+            incomplete_delegations = [
+                record["evidence_id"]
+                for record in evidence_ledger
+                if (
+                    record.get("tool") == "delegate_to_analyzer"
+                    and isinstance(record.get("result"), dict)
+                    and record["result"].get("status") != "completed"
+                )
+            ]
+
+            failed_tool_evidence = [
+                record["evidence_id"]
+                for record in evidence_ledger
+                if (
+                    isinstance(record.get("result"), dict)
+                    and record["result"].get("success") is False
+                )
+            ]
+
+            truncated_tool_evidence = [
+                record["evidence_id"]
+                for record in evidence_ledger
+                if (
+                    isinstance(record.get("result"), dict)
+                    and record["result"].get("result_limit_reached") is True
+                )
+            ]
+
+            retryable_statuses = (429, 500, 502, 503, 504)
+            completion_reason = (
+                "api_retry_exhausted"
+                if status_code in retryable_statuses
+                else "api_request_failed"
+            )
+
+            answer = (
+                "Investigation incomplete: the Google API request failed "
+                f"after retry handling. HTTP status: {status_code}. "
+                f"Error: {exc}. Previously collected evidence has been "
+                "preserved in evidence_records."
+            )
+
+            run_result = {
+                "status": "incomplete",
+                "completion_reason": completion_reason,
+                "investigation_status": "incomplete",
+                "tool_call_count": tool_call_count,
+                "evidence_records": evidence_ledger,
+                "incomplete_delegations": incomplete_delegations,
+                "failed_tool_evidence": failed_tool_evidence,
+                "truncated_tool_evidence": truncated_tool_evidence,
+                "api_error": {
+                    "type": type(exc).__name__,
+                    "status_code": status_code,
+                    "message": str(exc),
+                },
+                "answer": answer,
+            }
+
+            print("\n===== RUN COMPLETION =====")
+            print("STATUS: incomplete")
+            print("REASON:", completion_reason)
+            print("EVIDENCE RECORDS:", len(evidence_ledger))
+            print("TOOL CALLS:", tool_call_count)
+
+            return run_result
 
         candidate = response.candidates[0]
         model_content = candidate.content
