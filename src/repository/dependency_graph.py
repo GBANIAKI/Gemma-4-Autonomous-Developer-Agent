@@ -65,19 +65,30 @@ class DependencyGraph:
         queue = deque([(start, 0)])
         visited = {start}
         selected_edges = []
+        truncated = False
 
-        while queue and len(visited) < max_nodes:
+        while queue:
             current, depth = queue.popleft()
 
+            targets = sorted(adjacency.get(current, []))
+
             if depth >= max_depth:
+                if any(target not in visited for target in targets):
+                    truncated = True
                 continue
 
-            for target in sorted(adjacency.get(current, [])):
+            for target in targets:
                 selected_edges.append((current, target))
 
-                if target not in visited and len(visited) < max_nodes:
-                    visited.add(target)
-                    queue.append((target, depth + 1))
+                if target in visited:
+                    continue
+
+                if len(visited) >= max_nodes:
+                    truncated = True
+                    continue
+
+                visited.add(target)
+                queue.append((target, depth + 1))
 
         return {
             "root": start,
@@ -88,7 +99,7 @@ class DependencyGraph:
                 if source in visited and target in visited
             ],
             "max_depth": max_depth,
-            "truncated": bool(queue),
+            "truncated": truncated,
         }
 
     def to_dict(self) -> dict:

@@ -176,3 +176,228 @@ def test_graph_serialization(tmp_path):
 
     assert "pkg/a.py" in result["nodes"]
     assert {"source": "pkg/a.py", "target": "pkg/b.py"} in result["edges"]
+
+
+def test_resolves_relative_sibling_import(tmp_path):
+    package = tmp_path / "pkg" / "sub"
+    package.mkdir(parents=True)
+
+    (tmp_path / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "consumer.py").write_text(
+        "from . import helper\n",
+        encoding="utf-8",
+    )
+    (package / "helper.py").write_text(
+        "VALUE = 1\n",
+        encoding="utf-8",
+    )
+
+    graph = build_dependency_graph(tmp_path)
+
+    assert (
+        "pkg/sub/consumer.py",
+        "pkg/sub/helper.py",
+    ) in graph.edges
+
+
+def test_resolves_relative_parent_package_import(tmp_path):
+    package = tmp_path / "pkg" / "sub"
+    package.mkdir(parents=True)
+
+    (tmp_path / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "pkg" / "shared.py").write_text(
+        "VALUE = 1\n",
+        encoding="utf-8",
+    )
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "consumer.py").write_text(
+        "from .. import shared\n",
+        encoding="utf-8",
+    )
+
+    graph = build_dependency_graph(tmp_path)
+
+    assert (
+        "pkg/sub/consumer.py",
+        "pkg/shared.py",
+    ) in graph.edges
+
+
+def test_resolves_relative_import_from_package_initializer(tmp_path):
+    package = tmp_path / "pkg" / "sub"
+    package.mkdir(parents=True)
+
+    (tmp_path / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (package / "__init__.py").write_text(
+        "from . import helper\n",
+        encoding="utf-8",
+    )
+    (package / "helper.py").write_text(
+        "VALUE = 1\n",
+        encoding="utf-8",
+    )
+
+    graph = build_dependency_graph(tmp_path)
+
+    assert (
+        "pkg/sub/__init__.py",
+        "pkg/sub/helper.py",
+    ) in graph.edges
+
+
+
+
+def test_malformed_python_file_is_recorded_without_aborting_build(tmp_path):
+    create_repository(tmp_path)
+    broken = tmp_path / 'pkg' / 'broken.py'
+    broken.write_text('def broken(:\n    pass\n', encoding='utf-8')
+
+    graph = build_dependency_graph(tmp_path)
+
+    relative = 'pkg/broken.py'
+    assert relative in graph.nodes
+    assert graph.nodes[relative].parse_error is not None
+    assert relative in graph.parse_errors
+    assert graph.parse_errors[relative]
+
+
+def test_parse_error_does_not_discard_valid_dependencies(tmp_path):
+    create_repository(tmp_path)
+    broken = tmp_path / 'pkg' / 'broken.py'
+    broken.write_text('def broken(:\n    pass\n', encoding='utf-8')
+
+    graph = build_dependency_graph(tmp_path)
+
+    assert ('pkg/a.py', 'pkg/b.py') in graph.edges
+    assert ('pkg/b.py', 'pkg/c.py') in graph.edges
+    assert 'pkg/broken.py' in graph.parse_errors
+
+
+def test_excludes_configured_generated_and_dependency_directories(tmp_path):
+    create_repository(tmp_path)
+
+    excluded_dirs = [
+        '.venv', '__pycache__', 'node_modules', 'build', 'dist',
+        '.git', '.mypy_cache', '.pytest_cache', 'site-packages', 'venv',
+    ]
+
+    for directory in excluded_dirs:
+        folder = tmp_path / directory
+        folder.mkdir(parents=True)
+        (folder / 'hidden.py').write_text('VALUE = 1', encoding='utf-8')
+
+    graph = build_dependency_graph(tmp_path)
+
+    for directory in excluded_dirs:
+        assert f'{directory}/hidden.py' not in graph.nodes
+
+    assert 'pkg/a.py' in graph.nodes
+
+
+def test_excludes_nested_generated_directories_without_excluding_neighbors(tmp_path):
+    package = tmp_path / 'pkg'
+    package.mkdir()
+    (package / 'main.py').write_text('VALUE = 1', encoding='utf-8')
+
+    cache = package / '__pycache__'
+    cache.mkdir()
+    (cache / 'cached.py').write_text('VALUE = 2', encoding='utf-8')
+
+    build = package / 'build'
+    build.mkdir()
+    (build / 'generated.py').write_text('VALUE = 3', encoding='utf-8')
+
+    graph = build_dependency_graph(tmp_path)
+
+    assert 'pkg/main.py' in graph.nodes
+    assert 'pkg/__pycache__/cached.py' not in graph.nodes
+    assert 'pkg/build/generated.py' not in graph.nodes
+
+
+
+def test_build_preserves_circular_dependencies(tmp_path):
+    package = tmp_path / 'cycle'
+    package.mkdir()
+
+    newline = chr(10)
+    (package / 'a.py').write_text('import cycle.b' + newline, encoding='utf-8')
+    (package / 'b.py').write_text('import cycle.c' + newline, encoding='utf-8')
+    (package / 'c.py').write_text('import cycle.a' + newline, encoding='utf-8')
+
+    graph = build_dependency_graph(tmp_path)
+
+    assert set(graph.edges) == {
+        ('cycle/a.py', 'cycle/b.py'),
+        ('cycle/b.py', 'cycle/c.py'),
+        ('cycle/c.py', 'cycle/a.py'),
+    }
+
+
+def test_recursive_navigation_terminates_on_circular_dependencies(tmp_path):
+    package = tmp_path / 'cycle'
+    package.mkdir()
+
+    newline = chr(10)
+    (package / 'a.py').write_text('import cycle.b' + newline, encoding='utf-8')
+    (package / 'b.py').write_text('import cycle.c' + newline, encoding='utf-8')
+    (package / 'c.py').write_text('import cycle.a' + newline, encoding='utf-8')
+
+    navigator = RepositoryNavigator(tmp_path)
+
+    assert navigator.dependencies('cycle/a.py', recursive=True) == [
+        'cycle/b.py',
+        'cycle/c.py',
+    ]
+    assert navigator.dependents('cycle/a.py', recursive=True) == [
+        'cycle/b.py',
+        'cycle/c.py',
+    ]
+    assert navigator.dependency_path('cycle/a.py', 'cycle/a.py') == [
+        'cycle/a.py',
+    ]
+
+
+def test_large_graph_respects_node_limit_and_reports_truncation(tmp_path):
+    newline = chr(10)
+    root = tmp_path / 'root.py'
+    imports = [f'import module_{i}' for i in range(20)]
+    root.write_text(newline.join(imports) + newline, encoding='utf-8')
+
+    for i in range(20):
+        (tmp_path / f'module_{i}.py').write_text(
+            'VALUE = ' + str(i) + newline,
+            encoding='utf-8',
+        )
+
+    graph = build_dependency_graph(tmp_path)
+    result = graph.subgraph('root.py', max_depth=2, max_nodes=5)
+
+    assert len(result['nodes']) == 5
+    assert result['root'] == 'root.py'
+    assert result['truncated'] is True
+
+
+def test_depth_limit_reports_unvisited_descendants(tmp_path):
+    newline = chr(10)
+    (tmp_path / 'root.py').write_text('import middle' + newline, encoding='utf-8')
+    (tmp_path / 'middle.py').write_text('import leaf' + newline, encoding='utf-8')
+    (tmp_path / 'leaf.py').write_text('VALUE = 1' + newline, encoding='utf-8')
+
+    graph = build_dependency_graph(tmp_path)
+    result = graph.subgraph('root.py', max_depth=1)
+
+    assert result['nodes'] == ['middle.py', 'root.py']
+    assert result['truncated'] is True
+
+
+def test_depth_limit_does_not_report_truncation_at_graph_boundary(tmp_path):
+    newline = chr(10)
+    (tmp_path / 'root.py').write_text('import middle' + newline, encoding='utf-8')
+    (tmp_path / 'middle.py').write_text('VALUE = 1' + newline, encoding='utf-8')
+
+    graph = build_dependency_graph(tmp_path)
+    result = graph.subgraph('root.py', max_depth=1)
+
+    assert result['nodes'] == ['middle.py', 'root.py']
+    assert result['truncated'] is False
