@@ -697,3 +697,175 @@ def run_targeted_tests(
             "test_paths": validated_paths,
             "error": str(exc),
         }
+
+
+def verify_patch(patch_text: str) -> dict:
+    """
+    Check whether a unified Git diff can be applied.
+
+    This function is strictly read-only: it runs git apply --check
+    and never applies, stages, or commits the patch.
+    """
+    import re
+    import time
+
+    MAX_PATCH_SIZE = 256_000
+    OUTPUT_LIMIT = 12_000
+    TIMEOUT_SECONDS = 30
+
+    if not isinstance(patch_text, str) or not patch_text.strip():
+        return {
+            "success": False,
+            "status": "error",
+            "error": "patch_text must be a non-empty string.",
+        }
+
+    if len(patch_text.encode("utf-8")) > MAX_PATCH_SIZE:
+        return {
+            "success": False,
+            "status": "error",
+            "error": f"Patch exceeds the {MAX_PATCH_SIZE}-byte limit.",
+        }
+
+    if "GIT binary patch" in patch_text or "Binary files " in patch_text:
+        return {
+            "success": False,
+            "status": "error",
+            "error": "Binary patches are not supported.",
+        }
+
+    def validate_path(raw_path: str) -> None:
+        """Accept only safe, repository-relative Git paths."""
+        from pathlib import PurePosixPath
+
+        if (
+            not raw_path
+            or raw_path.startswith("/")
+            or "\\" in raw_path
+            or ":" in raw_path
+            or '"' in raw_path
+        ):
+            raise ValueError(f"Unsupported or unsafe patch path: {raw_path}")
+
+        parts = raw_path.split("/")
+
+        if any(part in ("", ".", "..") for part in parts):
+            raise ValueError(f"Unsafe patch path: {raw_path}")
+
+        if any(part.lower() == ".git" for part in parts):
+            raise ValueError("Patches targeting the .git directory are denied.")
+
+        normalized = str(PurePosixPath(raw_path))
+        _safe_path(normalized)
+
+    diff_headers = 0
+
+    try:
+        for line in patch_text.splitlines():
+            if line.startswith("diff --git "):
+                match = re.fullmatch(
+                    r"diff --git a/([^ \t]+) b/([^ \t]+)",
+                    line,
+                )
+
+                if not match:
+                    raise ValueError(
+                        "Unsupported diff header. Paths must be "
+                        "unquoted and contain no whitespace."
+                    )
+
+                validate_path(match.group(1))
+                validate_path(match.group(2))
+                diff_headers += 1
+
+            elif line.startswith("--- ") or line.startswith("+++ "):
+                raw_path = line[4:].split("\t", 1)[0]
+
+                if raw_path == "/dev/null":
+                    continue
+
+                if raw_path.startswith(("a/", "b/")):
+                    validate_path(raw_path[2:])
+                else:
+                    raise ValueError(
+                        f"Unsupported unified-diff file header: {line}"
+                    )
+
+            elif line.startswith(("rename from ", "rename to ",
+                                  "copy from ", "copy to ")):
+                raw_path = line.split(" ", 2)[2]
+                validate_path(raw_path)
+
+        if diff_headers == 0:
+            raise ValueError(
+                "No supported 'diff --git' header was found."
+            )
+
+    except (ValueError, PermissionError, OSError) as exc:
+        return {
+            "success": False,
+            "status": "error",
+            "error": str(exc),
+        }
+
+    command = ["git", "apply", "--check", "--verbose"]
+    started = time.monotonic()
+
+    try:
+        result = subprocess.run(
+            command,
+            input=patch_text,
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=TIMEOUT_SECONDS,
+            check=False,
+            shell=False,
+        )
+
+        stdout = result.stdout or ""
+        stderr = result.stderr or ""
+
+        return {
+            "success": True,
+            "status": (
+                "applicable" if result.returncode == 0 else "rejected"
+            ),
+            "exit_code": result.returncode,
+            "duration_seconds": round(time.monotonic() - started, 3),
+            "timeout_seconds": TIMEOUT_SECONDS,
+            "stdout": stdout[:OUTPUT_LIMIT],
+            "stderr": stderr[:OUTPUT_LIMIT],
+            "stdout_truncated": len(stdout) > OUTPUT_LIMIT,
+            "stderr_truncated": len(stderr) > OUTPUT_LIMIT,
+            "command": command,
+            "read_only": True,
+        }
+
+    except subprocess.TimeoutExpired as exc:
+        def decode_output(value):
+            if isinstance(value, bytes):
+                return value.decode("utf-8", errors="replace")
+            return value or ""
+
+        stdout = decode_output(exc.stdout)
+        stderr = decode_output(exc.stderr)
+
+        return {
+            "success": False,
+            "status": "timeout",
+            "exit_code": None,
+            "duration_seconds": round(time.monotonic() - started, 3),
+            "timeout_seconds": TIMEOUT_SECONDS,
+            "stdout": stdout[:OUTPUT_LIMIT],
+            "stderr": stderr[:OUTPUT_LIMIT],
+            "error": "Patch verification exceeded the 30-second timeout.",
+        }
+
+    except OSError as exc:
+        return {
+            "success": False,
+            "status": "error",
+            "error": str(exc),
+        }

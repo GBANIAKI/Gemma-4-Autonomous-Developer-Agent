@@ -14,6 +14,7 @@ from .local_tools import (
     get_code_neighbors,
     get_code_subgraph,
     run_targeted_tests,
+    verify_patch,
 )
 
 from .local_analyzer import run_analyzer
@@ -38,6 +39,7 @@ FUNCTIONS = {
     "get_code_subgraph": get_code_subgraph,
     "delegate_to_analyzer": delegate_to_analyzer,
     "run_targeted_tests": run_targeted_tests,
+    "verify_patch": verify_patch,
 }
 
 TOOL = types.Tool(
@@ -160,6 +162,25 @@ TOOL = types.Tool(
                 required=["task"],
             ),
         ),
+        types.FunctionDeclaration(
+            name="verify_patch",
+            description=(
+                "Check whether a unified Git diff can be applied to the "
+                "current repository state. This is a read-only check: "
+                "it does not apply, stage, or commit the patch."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "patch_text": types.Schema(
+                        type=types.Type.STRING,
+                        description="The unified Git diff patch to verify.",
+                    ),
+                },
+                required=["patch_text"],
+            ),
+        ),
+
         types.FunctionDeclaration(
             name="run_targeted_tests",
             description=(
