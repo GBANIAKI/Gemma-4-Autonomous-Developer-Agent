@@ -507,3 +507,193 @@ def get_code_subgraph(
             "dynamic imports, or semantic relationships."
         ),
     }
+
+def run_targeted_tests(
+    test_paths: list[str],
+    timeout_seconds: int = 120,
+) -> dict:
+    """
+    Run explicitly selected pytest files inside the repository tests directory.
+
+    This tool does not execute arbitrary shell commands or modify source files.
+    """
+    import re
+    import subprocess
+    import sys
+    import time
+
+    MAX_TIMEOUT = 300
+    MAX_TEST_FILES = 10
+    OUTPUT_LIMIT = 12000
+
+    if not isinstance(test_paths, list) or not test_paths:
+        return {
+            "success": False,
+            "status": "error",
+            "error": "Provide a non-empty list of test file paths.",
+        }
+
+    if len(test_paths) > MAX_TEST_FILES:
+        return {
+            "success": False,
+            "status": "error",
+            "error": f"At most {MAX_TEST_FILES} test files may be selected.",
+        }
+
+    try:
+        timeout_seconds = int(timeout_seconds)
+    except (TypeError, ValueError):
+        return {
+            "success": False,
+            "status": "error",
+            "error": "timeout_seconds must be an integer.",
+        }
+
+    if not 1 <= timeout_seconds <= MAX_TIMEOUT:
+        return {
+            "success": False,
+            "status": "error",
+            "error": f"timeout_seconds must be between 1 and {MAX_TIMEOUT}.",
+        }
+
+    tests_root = (PROJECT_ROOT / "tests").resolve()
+    validated_paths = []
+
+    for target in test_paths:
+        if not isinstance(target, str) or not target.strip():
+            return {
+                "success": False,
+                "status": "error",
+                "error": "Every test path must be a non-empty string.",
+            }
+
+        try:
+            path = _safe_path(target)
+            path.relative_to(tests_root)
+        except (OSError, ValueError, PermissionError):
+            return {
+                "success": False,
+                "status": "error",
+                "error": f"Test path must be inside tests/: {target}",
+            }
+
+        if not path.is_file() or path.suffix.lower() != ".py":
+            return {
+                "success": False,
+                "status": "error",
+                "error": f"Test path must be an existing Python file: {target}",
+            }
+
+        validated_paths.append(
+            path.relative_to(PROJECT_ROOT).as_posix()
+        )
+
+    command = [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-q",
+        "--disable-warnings",
+        "--no-header",
+        *validated_paths,
+    ]
+
+    started = time.monotonic()
+
+    try:
+        result = subprocess.run(
+            command,
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=timeout_seconds,
+            check=False,
+            shell=False,
+        )
+
+        duration = round(time.monotonic() - started, 3)
+        stdout = result.stdout or ""
+        stderr = result.stderr or ""
+
+        combined_output = stdout + "\n" + stderr
+
+        counts = {
+            "passed": 0,
+            "failed": 0,
+            "errors": 0,
+            "skipped": 0,
+            "xfailed": 0,
+            "xpassed": 0,
+            "deselected": 0,
+        }
+
+        for match in re.finditer(
+            r"(\d+)\s+(passed|failed|errors?|skipped|xfailed|xpassed|deselected)",
+            combined_output,
+            flags=re.IGNORECASE,
+        ):
+            count = int(match.group(1))
+            label = match.group(2).lower()
+
+            if label in ("error", "errors"):
+                label = "errors"
+
+            if label in counts:
+                counts[label] += count
+
+        if result.returncode == 0:
+            status = "passed"
+        else:
+            status = "failed"
+
+        stdout_truncated = len(stdout) > OUTPUT_LIMIT
+        stderr_truncated = len(stderr) > OUTPUT_LIMIT
+
+        return {
+            "success": True,
+            "status": status,
+            "exit_code": result.returncode,
+            "test_paths": validated_paths,
+            "duration_seconds": duration,
+            "timeout_seconds": timeout_seconds,
+            "counts": counts,
+            "stdout": stdout[:OUTPUT_LIMIT],
+            "stderr": stderr[:OUTPUT_LIMIT],
+            "stdout_truncated": stdout_truncated,
+            "stderr_truncated": stderr_truncated,
+            "command": command,
+        }
+
+    except subprocess.TimeoutExpired as exc:
+        duration = round(time.monotonic() - started, 3)
+
+        def decode_output(value):
+            if isinstance(value, bytes):
+                return value.decode("utf-8", errors="replace")
+            return value or ""
+
+        stdout = decode_output(exc.stdout)
+        stderr = decode_output(exc.stderr)
+
+        return {
+            "success": False,
+            "status": "timeout",
+            "exit_code": None,
+            "test_paths": validated_paths,
+            "duration_seconds": duration,
+            "timeout_seconds": timeout_seconds,
+            "stdout": stdout[:OUTPUT_LIMIT],
+            "stderr": stderr[:OUTPUT_LIMIT],
+            "stdout_truncated": len(stdout) > OUTPUT_LIMIT,
+            "stderr_truncated": len(stderr) > OUTPUT_LIMIT,
+            "error": "Test execution exceeded the configured timeout.",
+        }
+
+    except OSError as exc:
+        return {
+            "success": False,
+            "status": "error",
+            "test_paths": validated_paths,
+            "error": str(exc),
+        }

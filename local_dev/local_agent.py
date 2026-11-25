@@ -13,6 +13,7 @@ from .local_tools import (
     search_similar_code,
     get_code_neighbors,
     get_code_subgraph,
+    run_targeted_tests,
 )
 
 from .local_analyzer import run_analyzer
@@ -36,6 +37,7 @@ FUNCTIONS = {
     "get_code_neighbors": get_code_neighbors,
     "get_code_subgraph": get_code_subgraph,
     "delegate_to_analyzer": delegate_to_analyzer,
+    "run_targeted_tests": run_targeted_tests,
 }
 
 TOOL = types.Tool(
@@ -156,6 +158,33 @@ TOOL = types.Tool(
                     ),
                 },
                 required=["task"],
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="run_targeted_tests",
+            description=(
+                "Run explicitly selected pytest files inside the repository's "
+                "tests directory. Returns structured test counts, execution "
+                "status, duration, and bounded output. Does not modify files "
+                "or execute arbitrary shell commands."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "test_paths": types.Schema(
+                        type=types.Type.ARRAY,
+                        items=types.Schema(type=types.Type.STRING),
+                        description=(
+                            "Explicit repository-relative paths to Python test "
+                            "files inside tests/, such as tests/test_repository_graph.py."
+                        ),
+                    ),
+                    "timeout_seconds": types.Schema(
+                        type=types.Type.INTEGER,
+                        description="Execution timeout, from 1 to 300 seconds. Defaults to 120.",
+                    ),
+                },
+                required=["test_paths"],
             ),
         ),
     ]
