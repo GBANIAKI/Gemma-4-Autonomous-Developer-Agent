@@ -116,6 +116,7 @@ class DependencyGraphBuilder:
             if not any(part in EXCLUDED_DIRS for part in path.parts)
         )
 
+
     def _module_name(self, path: Path) -> str:
         relative = path.relative_to(self.root).with_suffix("")
         parts = list(relative.parts)
@@ -141,22 +142,23 @@ class DependencyGraphBuilder:
                     resolved.add(modules[candidate])
             return resolved
 
-        package = (
-            source_module.split(".")
-            if source_path.name == "__init__.py"
-            else source_module.split(".")[:-1]
-        )
+        if node.level == 0:
+            base = node.module or ""
+        else:
+            package = (
+                source_module.split(".")
+                if source_path.name == "__init__.py"
+                else source_module.split(".")[:-1]
+            )
 
-        if node.level:
             remove_count = node.level - 1
             if remove_count > len(package):
                 return resolved
+
             package = package[:len(package) - remove_count]
-
-        base = ".".join(package + ([node.module] if node.module else []))
-
-        if base in modules:
-            resolved.add(modules[base])
+            base = ".".join(
+                package + ([node.module] if node.module else [])
+            )
 
         for alias in node.names:
             candidate = f"{base}.{alias.name}" if base else alias.name
