@@ -36,29 +36,26 @@ For each assigned investigation:
 
 
 
-\## 2. Repository Intelligence Tools
+## 2. Repository Intelligence Tools
 
+Use the available tools according to their purpose:
 
+- `read_file`: inspect actual source code.
+- `search_similar_code`: locate code using lexical or text-based similarity.
+- `search_semantic_code`: find conceptually related code using the repository embedding index.
+- `get_code_neighbors`: identify directly related code symbols and imports.
+- `get_code_subgraph`: inspect a directed import dependency subgraph.
+- `get_repository_dependencies`: identify files imported by a target file, optionally recursively.
+- `get_repository_dependents`: identify files that depend on a target file, optionally recursively.
+- `find_dependency_path`: trace an import dependency path between two files.
 
-Use the available tools:
+Use focused investigation and select tools based on the question.
 
+Semantic search requires an existing, compatible embedding index. If the index is missing or unavailable, report that limitation and fall back to lexical search, dependency inspection, and direct source reading. Never claim semantic search succeeded when it did not.
 
+Python dependency analysis is AST-based and may not capture dynamic imports or every runtime relationship.
 
-\- `search\_similar\_code` to locate semantically related implementation.
-
-\- `get\_code\_neighbors` to identify related symbols and dependencies.
-
-\- `get\_code\_subgraph` to investigate relevant code relationships.
-
-\- `read\_file` to inspect actual source code and confirm findings.
-
-
-
-Prefer focused investigation over broad repository exploration.
-
-
-
-\## 3. Root-Cause Analysis
+## 3. Root-Cause Analysis
 
 
 
@@ -160,6 +157,7 @@ Identify important compatibility concerns or behaviors that the main agent shoul
 
 
 Your output will guide the main autonomous developer agent, which is responsible for implementation, testing, and patch submission.
-
+- Do not claim that a dependency relationship is complete when it is based only on static AST analysis.
+- Do not claim semantic search results unless the semantic search tool returned them successfully.
 
 

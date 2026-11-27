@@ -1,5 +1,7 @@
 
 from pathlib import Path
+from functools import lru_cache
+import os
 import subprocess
 
 # Project root: parent directory of local_dev/
@@ -507,6 +509,190 @@ def get_code_subgraph(
             "dynamic imports, or semantic relationships."
         ),
     }
+
+
+def _get_repository_navigator():
+    """Create a read-only navigator for the current repository."""
+    from src.graph_intelligence.navigation import RepositoryNavigator
+
+    return RepositoryNavigator(PROJECT_ROOT)
+
+
+def _validated_python_file(target: str) -> tuple[Path, str]:
+    """Resolve a repository Python file and return its relative path."""
+    path = _safe_path(target)
+
+    if not path.exists():
+        raise FileNotFoundError(f"Repository file not found: {target}")
+
+    if not path.is_file() or path.suffix.lower() != ".py":
+        raise ValueError("Target must be an existing Python file.")
+
+    return path, path.relative_to(PROJECT_ROOT).as_posix()
+
+
+def get_repository_dependencies(
+    target: str,
+    recursive: bool = False,
+) -> dict:
+    """Return direct or transitive imports of a Python file."""
+    try:
+        _, relative = _validated_python_file(target)
+
+        if not isinstance(recursive, bool):
+            raise ValueError("recursive must be a boolean.")
+
+        navigator = _get_repository_navigator()
+        dependencies = navigator.dependencies(relative, recursive=recursive)
+
+        return {
+            "success": True,
+            "target": relative,
+            "dependencies": dependencies,
+            "recursive": recursive,
+            "count": len(dependencies),
+        }
+    except (OSError, ValueError, PermissionError) as exc:
+        return {"success": False, "error": str(exc)}
+
+
+def get_repository_dependents(
+    target: str,
+    recursive: bool = False,
+) -> dict:
+    """Return files that directly or transitively import a Python file."""
+    try:
+        _, relative = _validated_python_file(target)
+
+        if not isinstance(recursive, bool):
+            raise ValueError("recursive must be a boolean.")
+
+        navigator = _get_repository_navigator()
+        dependents = navigator.dependents(relative, recursive=recursive)
+
+        return {
+            "success": True,
+            "target": relative,
+            "dependents": dependents,
+            "recursive": recursive,
+            "count": len(dependents),
+        }
+    except (OSError, ValueError, PermissionError) as exc:
+        return {"success": False, "error": str(exc)}
+
+
+def find_dependency_path(source: str, destination: str) -> dict:
+    """Find the shortest directed import path between two Python files."""
+    try:
+        _, source_relative = _validated_python_file(source)
+        _, destination_relative = _validated_python_file(destination)
+
+        navigator = _get_repository_navigator()
+        dependency_path = navigator.dependency_path(
+            source_relative,
+            destination_relative,
+        )
+
+        return {
+            "success": True,
+            "source": source_relative,
+            "destination": destination_relative,
+            "path": dependency_path,
+            "path_found": dependency_path is not None,
+        }
+    except (OSError, ValueError, PermissionError) as exc:
+        return {"success": False, "error": str(exc)}
+
+
+@lru_cache(maxsize=2)
+def _get_embedding_provider(model_name: str):
+    """Cache a small number of lazily initialized embedding providers."""
+    from src.embeddings.artifact_exporter import SentenceTransformerProvider
+
+    return SentenceTransformerProvider(model_name=model_name)
+
+
+def search_semantic_code(
+    query: str,
+    max_results: int = 5,
+    path_filter: str | None = None,
+) -> dict:
+    """Search precomputed repository embeddings without modifying the repository."""
+    if not isinstance(query, str) or not query.strip():
+        return {"success": False, "error": "query must be a non-empty string."}
+
+    if (
+        not isinstance(max_results, int)
+        or isinstance(max_results, bool)
+        or not 1 <= max_results <= 20
+    ):
+        return {
+            "success": False,
+            "error": "max_results must be an integer between 1 and 20.",
+        }
+
+    try:
+        from src.embeddings.semantic_search import SemanticCodeSearch
+
+        artifact_setting = os.getenv(
+            "REPOSITORY_EMBEDDINGS_PATH",
+            "artifacts/repository_embeddings.jsonl",
+        )
+        artifact_path = _safe_path(artifact_setting)
+
+        if not artifact_path.is_file():
+            return {
+                "success": False,
+                "error": "Repository embedding artifact was not found.",
+                "expected_path": str(artifact_path),
+                "next_step": (
+                    "Build the repository embedding artifact before using "
+                    "semantic search, or use lexical search instead."
+                ),
+            }
+
+        relative_filter = None
+        if path_filter:
+            filter_path = _safe_path(path_filter)
+            if not filter_path.is_file() or filter_path.suffix.lower() != ".py":
+                raise ValueError("path_filter must identify an existing Python file.")
+            relative_filter = filter_path.relative_to(PROJECT_ROOT).as_posix()
+
+        searcher = SemanticCodeSearch(artifact_path)
+
+        model_name = os.getenv(
+            "REPOSITORY_EMBEDDING_MODEL",
+            "sentence-transformers/all-MiniLM-L6-v2",
+        )
+        artifact_model = searcher.chunks[0].get("embedding_model")
+
+        if artifact_model and artifact_model != model_name:
+            return {
+                "success": False,
+                "error": "Embedding model does not match the artifact model.",
+                "artifact_model": artifact_model,
+                "configured_model": model_name,
+            }
+
+        provider = _get_embedding_provider(model_name)
+        query_vector = provider.encode([query.strip()])[0]
+
+        results = searcher.search(
+            query_embedding=[float(value) for value in query_vector],
+            top_k=max_results,
+            path_filter=relative_filter,
+        )
+
+        return {
+            "success": True,
+            "query": query.strip(),
+            "results": results,
+            "count": len(results),
+            "embedding_model": model_name,
+        }
+    except (OSError, ValueError, ImportError, RuntimeError, TypeError) as exc:
+        return {"success": False, "error": str(exc)}
+
 
 def run_targeted_tests(
     test_paths: list[str],

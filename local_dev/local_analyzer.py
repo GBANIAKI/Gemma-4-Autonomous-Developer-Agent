@@ -12,6 +12,10 @@ from .local_tools import (
     search_similar_code,
     get_code_neighbors,
     get_code_subgraph,
+    get_repository_dependencies,
+    get_repository_dependents,
+    find_dependency_path,
+    search_semantic_code,
 )
 
 
@@ -51,6 +55,10 @@ ANALYZER_FUNCTIONS = {
     "search_similar_code": search_similar_code,
     "get_code_neighbors": get_code_neighbors,
     "get_code_subgraph": get_code_subgraph,
+    "get_repository_dependencies": get_repository_dependencies,
+    "get_repository_dependents": get_repository_dependents,
+    "find_dependency_path": find_dependency_path,
+    "search_semantic_code": search_semantic_code,
 }
 
 
@@ -150,6 +158,56 @@ ANALYZER_TOOL = types.Tool(
                     ),
                 },
                 required=["target"],
+            ),
+        ),
+
+        types.FunctionDeclaration(
+            name="get_repository_dependencies",
+            description="List Python files imported by a target file. Optionally traverse dependencies recursively.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "target": types.Schema(type=types.Type.STRING),
+                    "recursive": types.Schema(type=types.Type.BOOLEAN),
+                },
+                required=["target"],
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="get_repository_dependents",
+            description="List Python files that import a target file. Optionally traverse dependents recursively.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "target": types.Schema(type=types.Type.STRING),
+                    "recursive": types.Schema(type=types.Type.BOOLEAN),
+                },
+                required=["target"],
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="find_dependency_path",
+            description="Find an import dependency path between two Python files.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "source": types.Schema(type=types.Type.STRING),
+                    "destination": types.Schema(type=types.Type.STRING),
+                },
+                required=["source", "destination"],
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="search_semantic_code",
+            description="Search indexed repository code by semantic similarity. Requires an existing embedding index.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "query": types.Schema(type=types.Type.STRING),
+                    "max_results": types.Schema(type=types.Type.INTEGER),
+                    "path_filter": types.Schema(type=types.Type.STRING),
+                },
+                required=["query"],
             ),
         ),
     ]

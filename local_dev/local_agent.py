@@ -13,6 +13,10 @@ from .local_tools import (
     search_similar_code,
     get_code_neighbors,
     get_code_subgraph,
+    get_repository_dependencies,
+    get_repository_dependents,
+    find_dependency_path,
+    search_semantic_code,
     run_targeted_tests,
     verify_patch,
 )
@@ -45,6 +49,10 @@ FUNCTIONS = {
     "search_similar_code": search_similar_code,
     "get_code_neighbors": get_code_neighbors,
     "get_code_subgraph": get_code_subgraph,
+    "get_repository_dependencies": get_repository_dependencies,
+    "get_repository_dependents": get_repository_dependents,
+    "find_dependency_path": find_dependency_path,
+    "search_semantic_code": search_semantic_code,
     "delegate_to_analyzer": delegate_to_analyzer,
     "run_targeted_tests": run_targeted_tests,
     "verify_patch": verify_patch,
@@ -149,6 +157,39 @@ TOOL = types.Tool(
             ),
         ),
 
+        types.FunctionDeclaration(
+            name="get_repository_dependencies",
+            description="List Python dependencies of a target file, optionally recursively.",
+            parameters=types.Schema(type=types.Type.OBJECT, properties={
+                "target": types.Schema(type=types.Type.STRING),
+                "recursive": types.Schema(type=types.Type.BOOLEAN),
+            }, required=["target"]),
+        ),
+        types.FunctionDeclaration(
+            name="get_repository_dependents",
+            description="List files that import a target file, optionally recursively.",
+            parameters=types.Schema(type=types.Type.OBJECT, properties={
+                "target": types.Schema(type=types.Type.STRING),
+                "recursive": types.Schema(type=types.Type.BOOLEAN),
+            }, required=["target"]),
+        ),
+        types.FunctionDeclaration(
+            name="find_dependency_path",
+            description="Find an import dependency path between two Python files.",
+            parameters=types.Schema(type=types.Type.OBJECT, properties={
+                "source": types.Schema(type=types.Type.STRING),
+                "destination": types.Schema(type=types.Type.STRING),
+            }, required=["source", "destination"]),
+        ),
+        types.FunctionDeclaration(
+            name="search_semantic_code",
+            description="Search the prebuilt semantic code embedding index.",
+            parameters=types.Schema(type=types.Type.OBJECT, properties={
+                "query": types.Schema(type=types.Type.STRING),
+                "max_results": types.Schema(type=types.Type.INTEGER),
+                "path_filter": types.Schema(type=types.Type.STRING),
+            }, required=["query"]),
+        ),
      types.FunctionDeclaration(
             name="delegate_to_analyzer",
             description=(
