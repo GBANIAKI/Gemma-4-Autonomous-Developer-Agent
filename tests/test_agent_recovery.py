@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from local_dev import local_agent
+from local_dev.execution_budget import ExecutionBudget
 
 
 class FakeServerError(Exception):
@@ -121,18 +122,26 @@ def test_run_agent_preserves_evidence_after_api_failure(monkeypatch):
 
         raise FakeServerError("Service unavailable", 503)
 
+    def fake_execute_tool(name, arguments, budget=None):
+        if budget is not None:
+            reserved = budget.reserve("exploratory")
+            assert reserved is True
+
+        return {
+            "success": True,
+            "status": "clean",
+        }
+
     monkeypatch.setattr(
         local_agent,
         "generate_with_retry",
         fake_generate_with_retry,
     )
+
     monkeypatch.setattr(
         local_agent,
         "execute_tool",
-        lambda name, arguments: {
-            "success": True,
-            "status": "clean",
-        },
+        fake_execute_tool,
     )
 
     result = local_agent.run_agent("Inspect repository status")
@@ -145,3 +154,78 @@ def test_run_agent_preserves_evidence_after_api_failure(monkeypatch):
     assert result["evidence_records"][0]["evidence_id"] == "M001"
     assert result["api_error"]["status_code"] == 503
     assert "preserved" in result["answer"]
+
+    assert result["budget"]["total_calls"] == 1
+    assert result["budget"]["exploratory_calls"] == 1
+
+def test_exploratory_exhaustion_preserves_verification_capacity(monkeypatch):
+    budget = ExecutionBudget(
+        max_total_calls=2,
+        max_exploratory_calls=0,
+        max_verification_calls=2,
+    )
+
+    monkeypatch.setitem(
+        local_agent.FUNCTIONS,
+        "get_status",
+        lambda: {"success": True},
+    )
+
+    exploratory_result = local_agent.execute_tool(
+        "get_status",
+        {},
+        budget=budget,
+    )
+
+    assert exploratory_result["status"] == "category_budget_exhausted"
+    assert budget.snapshot()["total_calls"] == 0
+
+    monkeypatch.setitem(
+        local_agent.FUNCTIONS,
+        "verify_patch",
+        lambda patch_text, timeout_seconds=30: {
+            "success": True,
+            "timeout_seconds": timeout_seconds,
+        },
+    )
+
+    verification_result = local_agent.execute_tool(
+        "verify_patch",
+        {"patch_text": "test patch"},
+        budget=budget,
+    )
+
+    assert verification_result["success"] is True
+    assert budget.snapshot()["verification_calls"] == 1
+
+@pytest.mark.parametrize("timeout_seconds", [0, 0.5])
+def test_invalid_test_timeout_does_not_consume_verification_budget(monkeypatch, timeout_seconds):
+    budget = ExecutionBudget(
+        max_total_calls=2,
+        max_exploratory_calls=0,
+        max_verification_calls=2,
+    )
+
+    def unexpected_test_execution(**kwargs):
+        pytest.fail("Targeted tests should not execute with an invalid timeout.")
+
+    monkeypatch.setitem(
+        local_agent.FUNCTIONS,
+        "run_targeted_tests",
+        unexpected_test_execution,
+    )
+
+    result = local_agent.execute_tool(
+        "run_targeted_tests",
+        {
+            "test_paths": ["tests/test_agent_recovery.py"],
+            "timeout_seconds": timeout_seconds,
+        },
+        budget=budget,
+    )
+
+    assert result["success"] is False
+    assert result["status"] == "error"
+    assert "at least one second" in result["error"]
+    assert budget.snapshot()["total_calls"] == 0
+    assert budget.snapshot()["verification_calls"] == 0

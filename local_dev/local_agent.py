@@ -17,12 +17,13 @@ from .local_tools import (
     verify_patch,
 )
 
-from .local_analyzer import run_analyzer
+from .local_analyzer import run_analyzer, ExecutionBudgetExceeded
+from .execution_budget import ExecutionBudget
 
 
-def delegate_to_analyzer(task):
-    """Delegate a repository investigation to the read-only analyzer."""
-    return run_analyzer(task)
+def delegate_to_analyzer(task, budget=None):
+    """Delegate a repository investigation using the shared execution budget."""
+    return run_analyzer(task, budget=budget)
 
 
 MODEL = "gemma-4-31b-it"
@@ -210,7 +211,7 @@ TOOL = types.Tool(
                     ),
                     "timeout_seconds": types.Schema(
                         type=types.Type.INTEGER,
-                        description="Execution timeout, from 1 to 300 seconds. Defaults to 120.",
+                        description="Execution timeout, from 1 to 120 seconds. Defaults to 120.",
                     ),
                 },
                 required=["test_paths"],
@@ -220,25 +221,122 @@ TOOL = types.Tool(
 )
 
 
-def execute_tool(name, arguments):
-    """Execute only registered, read-only tools."""
-    function = FUNCTIONS.get(name)
+def execute_tool(name, arguments, budget=None):
+    """Execute a registered tool under the shared execution budget."""
+    arguments = dict(arguments or {})
 
+    verification_tools = {"run_targeted_tests", "verify_patch"}
+    category = "verification" if name in verification_tools else "exploratory"
+
+    function = FUNCTIONS.get(name)
     if function is None:
         return {
             "success": False,
             "error": f"Tool is not permitted: {name}",
         }
 
+    requested_test_timeout = None
+
+    # Validate the requested timeout before consuming a budget reservation.
+    if name == "run_targeted_tests" and budget is not None:
+        requested_test_timeout = arguments.get("timeout_seconds", 120)
+
+        try:
+            requested_test_timeout = float(requested_test_timeout)
+        except (TypeError, ValueError):
+            return {
+                "success": False,
+                "status": "error",
+                "error": "timeout_seconds must be a number.",
+            }
+
+        if requested_test_timeout < 1:
+            return {
+                "success": False,
+                "status": "error",
+                "error": "timeout_seconds must be at least one second.",
+            }
+        # Check whether enough time remains before reserving the call.
+        available_timeout = budget.timeout_for(
+            min(120, requested_test_timeout)
+        )
+
+        if available_timeout < 1:
+            return {
+                "success": False,
+                "status": "budget_exhausted",
+                "error": (
+                    "Less than one second remains for targeted test execution."
+                ),
+                "budget": budget.snapshot(),
+            }
+
+    if budget is not None and not budget.reserve(category):
+        snapshot = budget.snapshot()
+
+        globally_exhausted = (
+            snapshot["remaining_seconds"] <= 0
+            or snapshot["total_calls"] >= snapshot["max_total_calls"]
+        )
+
+        return {
+            "success": False,
+            "status": (
+                "budget_exhausted"
+                if globally_exhausted
+                else "category_budget_exhausted"
+            ),
+            "error": (
+                "The shared execution budget is exhausted."
+                if globally_exhausted
+                else f"The {category} call limit has been reached."
+            ),
+            "budget": snapshot,
+        }
+
     try:
+        if name == "delegate_to_analyzer":
+            return function(**arguments, budget=budget)
+
+        if name == "run_targeted_tests" and budget is not None:
+            timeout = budget.timeout_for(
+                min(120, requested_test_timeout)
+            )
+
+            if timeout < 1:
+                return {
+                    "success": False,
+                    "status": "budget_exhausted",
+                    "error": (
+                        "Less than one second remains for targeted test execution."
+                    ),
+                    "budget": budget.snapshot(),
+                }
+
+            arguments["timeout_seconds"] = min(120, int(timeout))
+            return function(**arguments)
+
+        if name == "verify_patch" and budget is not None:
+            timeout = budget.timeout_for(30)
+
+            if timeout <= 0:
+                return {
+                    "success": False,
+                    "status": "budget_exhausted",
+                    "error": "No execution time remains for patch verification.",
+                    "budget": budget.snapshot(),
+                }
+
+            arguments["timeout_seconds"] = timeout
+            return function(**arguments)
+
         return function(**arguments)
+
     except Exception as exc:
         return {
             "success": False,
             "error": str(exc),
         }
-
-
 
 def build_evidence_records(name, arguments, result, call_number):
     """
@@ -281,11 +379,20 @@ def build_evidence_records(name, arguments, result, call_number):
 
 
 
-def generate_with_retry(**kwargs):
-    """Retry temporary Google API availability and rate-limit errors."""
+
+
+
+def generate_with_retry(budget=None, **kwargs):
+    """Retry temporary API errors while respecting the shared deadline."""
     delays = [5, 15, 30]
 
     for attempt in range(len(delays) + 1):
+
+        if budget is not None and budget.remaining_seconds() <= 0:
+            raise ExecutionBudgetExceeded(
+                "The shared execution deadline expired before the API request."
+            )
+
         try:
             return get_client().models.generate_content(**kwargs)
 
@@ -299,6 +406,15 @@ def generate_with_retry(**kwargs):
                 raise
 
             delay = delays[attempt]
+
+            if (
+                budget is not None
+                and budget.remaining_seconds() <= delay
+            ):
+                raise ExecutionBudgetExceeded(
+                    f"Insufficient execution time remains for the {delay}-second API retry delay."
+                ) from exc
+
             print(
                 f"[API RETRY] Attempt {attempt + 1}/3 failed "
                 f"(HTTP {status_code}). Waiting {delay} seconds."
@@ -306,8 +422,8 @@ def generate_with_retry(**kwargs):
             time.sleep(delay)
 
 
-
-def run_agent(task):
+def run_agent(task, budget=None):
+    budget = budget or ExecutionBudget()
     contents = [
         types.Content(
             role="user",
@@ -315,8 +431,8 @@ def run_agent(task):
                 types.Part.from_text(
                     text=(
                         "You are a repository investigation agent. "
-                         "Use the available read-only tools to investigate "
-                         "the user's request. Base conclusions on tool "
+                        "Use the available read-only tools to investigate "
+                        "the user's request. Base conclusions on tool "
                          "evidence. Do not claim to have modified files.\n\n"
 
                          "EVIDENCE AND REPORTING RULES:\n"
@@ -368,16 +484,26 @@ def run_agent(task):
     )
 
     tool_call_count = 0
+    model_tool_call_attempt_count = 0
+    max_model_tool_call_attempts = (
+        MAX_TOOL_CALLS + budget.max_total_calls
+    )
+    evidence_call_count = 0
     evidence_ledger = []
+    stop_reason = "tool_call_limit"
 
-    while tool_call_count < MAX_TOOL_CALLS:
+    while (
+        tool_call_count < MAX_TOOL_CALLS
+        and model_tool_call_attempt_count < max_model_tool_call_attempts
+    ):
         try:
             response = generate_with_retry(
+                budget=budget,
                 model=MODEL,
                 contents=contents,
                 config=config,
             )
-        except (errors.ServerError, errors.ClientError) as exc:
+        except (ExecutionBudgetExceeded,errors.ServerError,errors.ClientError) as exc:
             status_code = getattr(exc, "code", None)
 
             incomplete_delegations = [
@@ -410,17 +536,28 @@ def run_agent(task):
 
             retryable_statuses = (429, 500, 502, 503, 504)
             completion_reason = (
-                "api_retry_exhausted"
-                if status_code in retryable_statuses
-                else "api_request_failed"
+                "budget_exhausted"
+                if isinstance(exc, ExecutionBudgetExceeded)
+                else (
+                    "api_retry_exhausted"
+                    if status_code in retryable_statuses
+                    else "api_request_failed"
+                )
             )
 
-            answer = (
-                "Investigation incomplete: the Google API request failed "
-                f"after retry handling. HTTP status: {status_code}. "
-                f"Error: {exc}. Previously collected evidence has been "
-                "preserved in evidence_records."
-            )
+            if isinstance(exc, ExecutionBudgetExceeded):
+                answer = (
+                    "Investigation incomplete: the shared execution deadline "
+                    "prevented further API work. Previously collected evidence "
+                    "has been preserved in evidence_records."
+                )
+            else:
+                answer = (
+                    "Investigation incomplete: the Google API request failed "
+                    f"after retry handling. HTTP status: {status_code}. "
+                    f"Error: {exc}. Previously collected evidence has been "
+                    "preserved in evidence_records."
+                )
 
             run_result = {
                 "status": "incomplete",
@@ -431,6 +568,7 @@ def run_agent(task):
                 "incomplete_delegations": incomplete_delegations,
                 "failed_tool_evidence": failed_tool_evidence,
                 "truncated_tool_evidence": truncated_tool_evidence,
+                "budget": budget.snapshot(),
                 "api_error": {
                     "type": type(exc).__name__,
                     "status_code": status_code,
@@ -582,6 +720,7 @@ def run_agent(task):
                     record["evidence_id"]
                     for record in truncated_tool_records
                 ],
+                "budget": budget.snapshot(),
                 "answer": final_answer,
             }
 
@@ -606,10 +745,11 @@ def run_agent(task):
     
 
         tool_responses = []
+        budget_blocked = False
 
         for call in function_calls:
-            if tool_call_count >= MAX_TOOL_CALLS:
-                break
+            evidence_call_count += 1
+            model_tool_call_attempt_count += 1
 
             name = call.name
             arguments = dict(call.args or {})
@@ -617,14 +757,68 @@ def run_agent(task):
             print(f"\n[TOOL CALL] {name}")
             print("[ARGUMENTS]", arguments)
 
-            result = execute_tool(name, arguments)
-            tool_call_count += 1
+            if (
+                model_tool_call_attempt_count
+                > max_model_tool_call_attempts
+            ):
+                result = {
+                    "success": False,
+                    "status": "model_tool_call_attempt_limit",
+                    "error": (
+                        "The model exceeded the maximum number of "
+                        "tool-call attempts."
+                    ),
+                    "budget": budget.snapshot(),
+                }
+            elif tool_call_count >= MAX_TOOL_CALLS:
+                result = {
+                    "success": False,
+                    "status": "tool_call_limit",
+                    "error": (
+                        f"The main agent reached its maximum "
+                        f"of {MAX_TOOL_CALLS} tool calls."
+                    ),
+                    "budget": budget.snapshot(),
+                }
+            else:
+                before_total = budget.snapshot()["total_calls"]
 
+                result = execute_tool(
+                    name,
+                    arguments,
+                    budget=budget,
+                )
+
+                after_total = budget.snapshot()["total_calls"]
+
+                dispatched = after_total > before_total
+
+                if dispatched:
+                    tool_call_count += 1
+
+                if (
+                    isinstance(result, dict)
+                    and result.get("status") in {
+                        "budget_exhausted",
+                        "category_budget_exhausted",
+                    }
+                ):
+                    snapshot = result.get("budget") or budget.snapshot()
+
+                    globally_exhausted = (
+                        result.get("status") == "budget_exhausted"
+                        or snapshot.get("remaining_seconds", 0) <= 0
+                        or snapshot.get("total_calls", 0)
+                        >= snapshot.get("max_total_calls", 0)
+                    )
+
+                    if globally_exhausted:
+                        budget_blocked = True
             new_evidence = build_evidence_records(
                 name=name,
                 arguments=arguments,
                 result=result,
-                call_number=tool_call_count,
+                call_number=evidence_call_count,
             )
 
             evidence_ledger.extend(new_evidence)
@@ -654,6 +848,14 @@ def run_agent(task):
                     parts=tool_responses,
                 )
             )
+
+        if budget_blocked:
+            stop_reason = "budget_exhausted"
+            break
+
+        if model_tool_call_attempt_count >= max_model_tool_call_attempts:
+            stop_reason = "model_tool_call_attempt_limit"
+            break
 
 
     incomplete_delegations = [
@@ -689,7 +891,7 @@ def run_agent(task):
 
     run_result = {
         "status": "incomplete",
-        "completion_reason": "tool_call_limit",
+        "completion_reason": stop_reason,
         "investigation_status": "incomplete",
         "tool_call_count": tool_call_count,
         "evidence_records": evidence_ledger,
@@ -706,13 +908,18 @@ def run_agent(task):
             record["evidence_id"]
             for record in truncated_tool_records
         ],
+        "budget": budget.snapshot(),
         "answer": None,
     }
 
     print("\n===== RUN COMPLETION =====")
     print("STATUS: incomplete")
-    print("REASON: tool_call_limit")
-    print("The agent stopped to prevent an unlimited tool loop.")
+    print("REASON:", stop_reason)
+
+    if stop_reason == "budget_exhausted":
+        print("The agent stopped because the shared execution budget was exhausted.")
+    else:
+        print("The agent stopped after reaching the main-agent tool-call limit.")
     print("EVIDENCE RECORDS:", len(evidence_ledger))
     print("TOOL CALLS:", tool_call_count)
 

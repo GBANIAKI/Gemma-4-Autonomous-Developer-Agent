@@ -2,6 +2,7 @@
 import json
 import time
 from pathlib import Path
+from .execution_budget import ExecutionBudget
 
 from google import genai
 from google.genai import errors, types
@@ -24,8 +25,19 @@ MAX_TOOL_CALLS = 8
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PROMPT_PATH = PROJECT_ROOT / "submission" / "prompts" / "analyzer.md"
 
-client = genai.Client()
+_client = None
 
+
+def get_client():
+    """Initialize the Google GenAI client only when needed."""
+    global _client
+    if _client is None:
+        _client = genai.Client()
+    return _client
+
+
+class ExecutionBudgetExceeded(RuntimeError):
+    """Raised when the shared execution deadline prevents more work."""
 
 # ---------------------------------------------------------
 # ANALYZER PERMISSIONS
@@ -168,6 +180,7 @@ def execute_analyzer_tool(name, arguments):
     except Exception as exc:
         return {
             "success": False,
+            "error_type": type(exc).__name__,
             "error": str(exc),
         }
 
@@ -176,14 +189,20 @@ def execute_analyzer_tool(name, arguments):
 # API RETRY HANDLING
 # ---------------------------------------------------------
 
-def generate_with_retry(**kwargs):
-    """Retry temporary API availability and rate-limit errors."""
+def generate_with_retry(budget=None, **kwargs):
+    """Retry temporary API errors while respecting the shared deadline."""
 
     delays = [5, 15, 30]
 
-    for attempt, delay in enumerate(delays, start=1):
+    for attempt in range(len(delays) + 1):
+
+        if budget is not None and budget.remaining_seconds() <= 0:
+            raise ExecutionBudgetExceeded(
+                "The shared execution deadline expired before API generation."
+            )
+
         try:
-            return client.models.generate_content(**kwargs)
+            return get_client().models.generate_content(**kwargs)
 
         except (errors.ServerError, errors.ClientError) as exc:
             status_code = getattr(exc, "code", None)
@@ -194,14 +213,22 @@ def generate_with_retry(**kwargs):
             if attempt == len(delays):
                 raise
 
+            delay = delays[attempt]
+
+            if budget is not None:
+                remaining = budget.remaining_seconds()
+
+                if remaining <= delay:
+                    raise ExecutionBudgetExceeded(
+                        "Insufficient remaining time for the next API retry."
+                    )
+
             print(
-                f"[ANALYZER API RETRY] Attempt {attempt} failed "
+                f"[ANALYZER API RETRY] Attempt {attempt + 1} failed "
                 f"(HTTP {status_code}). Waiting {delay} seconds."
             )
 
             time.sleep(delay)
-
-
 # ---------------------------------------------------------
 # ANALYZER PROMPT
 # ---------------------------------------------------------
@@ -222,7 +249,7 @@ def load_analyzer_prompt():
 # ---------------------------------------------------------
 
 
-def run_analyzer(task):
+def run_analyzer(task, budget=None):
     """
     Run the specialized read-only code analyzer.
 
@@ -250,6 +277,7 @@ def run_analyzer(task):
             "message": message,
             "tool_call_count": tool_call_count,
             "completed_tool_results": completed_tool_results,
+            "budget": budget.snapshot() if budget is not None else None,
         }
 
     system_prompt = load_analyzer_prompt()
@@ -294,9 +322,24 @@ def run_analyzer(task):
 
         try:
             response = generate_with_retry(
+                budget=budget,
                 model=MODEL,
                 contents=contents,
                 config=config,
+            )
+
+        except ExecutionBudgetExceeded as exc:
+            return make_result(
+                status="incomplete",
+                error={
+                    "type": "budget_exhausted",
+                    "message": str(exc),
+                },
+                message=(
+                    "The shared execution deadline prevented the "
+                    "analyzer from continuing. Completed evidence "
+                    "has been preserved."
+                ),
             )
 
         except (errors.ServerError, errors.ClientError) as exc:
@@ -368,19 +411,47 @@ def run_analyzer(task):
             )
 
         tool_responses = []
+        budget_blocked = False
+        local_limit_reached = False
 
         for call in function_calls:
 
-            if tool_call_count >= MAX_TOOL_CALLS:
-                break
-
             name = call.name
             arguments = dict(call.args or {})
+            dispatched = False
 
             print(f"\n[ANALYZER TOOL CALL] {name}")
             print("[ARGUMENTS]", arguments)
 
-            result = execute_analyzer_tool(name, arguments)
+            if tool_call_count >= MAX_TOOL_CALLS:
+                local_limit_reached = True
+
+                result = {
+                    "success": False,
+                    "status": "tool_call_limit",
+                    "error": (
+                        f"The analyzer reached its maximum of "
+                        f"{MAX_TOOL_CALLS} tool calls."
+                    ),
+                }
+
+            elif budget is not None and not budget.reserve("exploratory"):
+                budget_blocked = True
+
+                result = {
+                    "success": False,
+                    "status": "budget_exhausted",
+                    "error": (
+                        "The shared execution budget does not permit "
+                        "another analyzer tool call."
+                    ),
+                    "budget": budget.snapshot(),
+                }
+
+            else:
+                dispatched = True
+                result = execute_analyzer_tool(name, arguments)
+                tool_call_count += 1
 
             evidence_id = f"A{len(completed_tool_results) + 1:03d}"
 
@@ -389,9 +460,8 @@ def run_analyzer(task):
                 "tool": name,
                 "arguments": arguments,
                 "result": result,
+                "dispatched": dispatched,
             })
-
-            tool_call_count += 1
 
             print(
                 "[RESULT]",
@@ -408,10 +478,35 @@ def run_analyzer(task):
         if tool_responses:
             contents.append(
                 types.Content(
-                    role="tool",
+                    role="user",
                     parts=tool_responses,
                 )
             )
+
+        if budget_blocked or local_limit_reached:
+            if budget_blocked:
+                error_type = "budget_exhausted"
+                error_message = (
+                    "The shared execution budget prevented the analyzer "
+                    "from continuing. Completed evidence has been preserved."
+                )
+            else:
+                error_type = "tool_call_limit"
+                error_message = (
+                    f"The analyzer reached its maximum of "
+                    f"{MAX_TOOL_CALLS} tool calls. Completed evidence "
+                    "has been preserved."
+                )
+
+            return make_result(
+                status="incomplete",
+                error={
+                    "type": error_type,
+                    "message": error_message,
+                },
+                message=error_message,
+            )
+
 
     print("\n[ANALYZER] Tool-call limit reached.")
     print("The analyzer stopped to prevent an unlimited tool loop.")

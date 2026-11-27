@@ -54,7 +54,7 @@ def test_reject_excessive_timeout():
     )
 
     assert result["success"] is False
-    assert "between 1 and 300" in result["error"]
+    assert "between 1 and 120" in result["error"]
 
 
 def test_timeout_returns_structured_failure(monkeypatch):

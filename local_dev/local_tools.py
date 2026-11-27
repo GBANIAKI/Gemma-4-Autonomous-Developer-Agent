@@ -522,7 +522,7 @@ def run_targeted_tests(
     import sys
     import time
 
-    MAX_TIMEOUT = 300
+    MAX_TIMEOUT = 120
     MAX_TEST_FILES = 10
     OUTPUT_LIMIT = 12000
 
@@ -699,7 +699,7 @@ def run_targeted_tests(
         }
 
 
-def verify_patch(patch_text: str) -> dict:
+def verify_patch(patch_text: str, timeout_seconds: float = 30) -> dict:
     """
     Check whether a unified Git diff can be applied.
 
@@ -711,7 +711,23 @@ def verify_patch(patch_text: str) -> dict:
 
     MAX_PATCH_SIZE = 256_000
     OUTPUT_LIMIT = 12_000
-    TIMEOUT_SECONDS = 30
+    MAX_TIMEOUT_SECONDS = 30
+
+    try:
+        timeout_seconds = float(timeout_seconds)
+    except (TypeError, ValueError):
+        return {
+            "success": False,
+            "status": "error",
+            "error": "timeout_seconds must be a number between 0 and 30.",
+        }
+
+    if not 0 < timeout_seconds <= MAX_TIMEOUT_SECONDS:
+        return {
+            "success": False,
+            "status": "error",
+            "error": "timeout_seconds must be greater than 0 and at most 30.",
+        }
 
     if not isinstance(patch_text, str) or not patch_text.strip():
         return {
@@ -819,7 +835,7 @@ def verify_patch(patch_text: str) -> dict:
             capture_output=True,
             text=True,
             errors="replace",
-            timeout=TIMEOUT_SECONDS,
+            timeout=timeout_seconds,
             check=False,
             shell=False,
         )
@@ -834,7 +850,7 @@ def verify_patch(patch_text: str) -> dict:
             ),
             "exit_code": result.returncode,
             "duration_seconds": round(time.monotonic() - started, 3),
-            "timeout_seconds": TIMEOUT_SECONDS,
+            "timeout_seconds": timeout_seconds,
             "stdout": stdout[:OUTPUT_LIMIT],
             "stderr": stderr[:OUTPUT_LIMIT],
             "stdout_truncated": len(stdout) > OUTPUT_LIMIT,
@@ -857,10 +873,10 @@ def verify_patch(patch_text: str) -> dict:
             "status": "timeout",
             "exit_code": None,
             "duration_seconds": round(time.monotonic() - started, 3),
-            "timeout_seconds": TIMEOUT_SECONDS,
+            "timeout_seconds": timeout_seconds,
             "stdout": stdout[:OUTPUT_LIMIT],
             "stderr": stderr[:OUTPUT_LIMIT],
-            "error": "Patch verification exceeded the 30-second timeout.",
+            "error": "Patch verification exceeded the configured timeout.",
         }
 
     except OSError as exc:
