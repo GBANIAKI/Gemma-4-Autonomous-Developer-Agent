@@ -27,7 +27,6 @@ def delegate_to_analyzer(task, budget=None):
 
 
 MODEL = "gemma-4-31b-it"
-MAX_TOOL_CALLS = 6
 
 _client = None
 
@@ -485,15 +484,16 @@ def run_agent(task, budget=None):
 
     tool_call_count = 0
     model_tool_call_attempt_count = 0
+    max_tool_calls = budget.max_total_calls
     max_model_tool_call_attempts = (
-        MAX_TOOL_CALLS + budget.max_total_calls
+        max_tool_calls + budget.max_total_calls
     )
     evidence_call_count = 0
     evidence_ledger = []
     stop_reason = "tool_call_limit"
 
     while (
-        tool_call_count < MAX_TOOL_CALLS
+        tool_call_count < max_tool_calls
         and model_tool_call_attempt_count < max_model_tool_call_attempts
     ):
         try:
@@ -770,13 +770,13 @@ def run_agent(task, budget=None):
                     ),
                     "budget": budget.snapshot(),
                 }
-            elif tool_call_count >= MAX_TOOL_CALLS:
+            elif tool_call_count >= max_tool_calls:
                 result = {
                     "success": False,
                     "status": "tool_call_limit",
                     "error": (
                         f"The main agent reached its maximum "
-                        f"of {MAX_TOOL_CALLS} tool calls."
+                        f"of {max_tool_calls} tool calls."
                     ),
                     "budget": budget.snapshot(),
                 }

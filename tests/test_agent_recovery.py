@@ -229,3 +229,48 @@ def test_invalid_test_timeout_does_not_consume_verification_budget(monkeypatch, 
     assert "at least one second" in result["error"]
     assert budget.snapshot()["total_calls"] == 0
     assert budget.snapshot()["verification_calls"] == 0
+
+
+def test_run_agent_can_dispatch_more_than_six_tools(monkeypatch):
+    budget = ExecutionBudget(
+        max_total_calls=8,
+        max_exploratory_calls=8,
+        max_verification_calls=0,
+    )
+    generated_responses = []
+
+    for _ in range(7):
+        generated_responses.append(SimpleNamespace(
+            candidates=[SimpleNamespace(content=None)],
+            function_calls=[SimpleNamespace(name="get_status", args={})],
+            text=None,
+        ))
+
+    generated_responses.append(SimpleNamespace(
+        candidates=[SimpleNamespace(content=None)],
+        function_calls=[],
+        text="Investigation completed.",
+    ))
+
+    def fake_generate_with_retry(**kwargs):
+        return generated_responses.pop(0)
+
+    def fake_execute_tool(name, arguments, budget=None):
+        assert name == "get_status"
+        assert budget.reserve("exploratory") is True
+        return {"success": True, "status": "clean"}
+
+    monkeypatch.setattr(
+        local_agent, "generate_with_retry", fake_generate_with_retry
+    )
+    monkeypatch.setattr(
+        local_agent, "execute_tool", fake_execute_tool
+    )
+
+    result = local_agent.run_agent("Inspect repository status", budget=budget)
+
+    assert result["status"] == "completed"
+    assert result["tool_call_count"] == 7
+    assert result["budget"]["total_calls"] == 7
+    assert len(result["evidence_records"]) == 7
+    assert result["answer"] == "Investigation completed."
